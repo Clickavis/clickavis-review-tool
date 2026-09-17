@@ -36,13 +36,32 @@ export default async function handler(req, res) {
 
     // Si c'est un lien court Google Maps, on le résout d'abord pour
     // obtenir l'URL complète (les liens courts ne sont pas exploitables
-    // directement par l'API de recherche).
+    // directement par l'API de recherche). Limité à 5 secondes max pour
+    // ne jamais bloquer toute la fonction si Google répond lentement.
     if (/goo\.gl\/maps|maps\.app\.goo\.gl/i.test(query)) {
       try {
-        const resolved = await fetch(query, { method: 'GET', redirect: 'follow' });
-        searchText = resolved.url || query;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(function () { controller.abort(); }, 5000);
+        const resolved = await fetch(query, {
+          method: 'GET',
+          redirect: 'follow',
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ClickAvisBot/1.0)' },
+        });
+        clearTimeout(timeoutId);
+        var resolvedUrl = resolved.url || query;
+
+        // On extrait le nom du commerce depuis le format .../maps/place/Nom+Du+Commerce/...
+        // plutôt que d'envoyer l'URL brute, que Google interprète moins bien.
+        var placeMatch = resolvedUrl.match(/\/maps\/place\/([^/]+)/);
+        if (placeMatch && placeMatch[1]) {
+          searchText = decodeURIComponent(placeMatch[1]).replace(/\+/g, ' ');
+        } else {
+          searchText = resolvedUrl;
+        }
       } catch (e) {
-        // Si la résolution échoue, on continue avec le lien original tel quel.
+        // Si la résolution échoue ou prend trop de temps, on continue
+        // avec le lien original tel quel plutôt que de tout bloquer.
       }
     }
 

@@ -1,79 +1,73 @@
-// api/review-link.js
-// Fonction serverless : reçoit un nom de commerce ou un lien Google Maps,
-// interroge Google Places API (New) avec la clé secrète (jamais exposée
-// au navigateur), et renvoie le lien direct d'avis Google + les infos
-// du commerce trouvé.
+// ============================================================
+// ClickAvis — Générateur de lien d'avis Google
+// Fichier : api/review-link.js  (fonction serverless Vercel)
+// Remplace ENTIÈREMENT le contenu de ton fichier existant.
+// La clé API reste côté serveur (variable GOOGLE_PLACES_API_KEY).
+// ============================================================
 
 export default async function handler(req, res) {
-  // Autorise les appels depuis ton domaine Shopify uniquement
-  res.setHeader('Access-Control-Allow-Origin', 'https://clickavis.com');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // --- CORS : autorise ta page Shopify (clickavis.com) à appeler cette fonction ---
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
   }
 
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Méthode non autorisée' });
+  // --- Lecture du paramètre q (nom du commerce, idéalement avec la ville) ---
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (!q) {
+    res.status(400).json({
+      error: "Paramètre 'q' manquant. Exemple : /api/review-link?q=Starbucks%20Montreal"
+    });
+    return;
   }
 
-  const query = (req.query.q || '').toString().trim();
-  if (!query) {
-    return res.status(400).json({ error: 'Merci de fournir un nom de commerce ou un lien Google Maps.' });
-  }
-
+  // --- Clé API (jamais exposée au navigateur) ---
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
-    return res.status(500).json({ error: 'Clé API non configurée sur le serveur.' });
+    res.status(500).json({ error: "Clé API non configurée sur le serveur." });
+    return;
   }
 
   try {
-    let searchText = query;
-
-    // Si c'est un lien court Google Maps, on le résout d'abord pour
-    // obtenir l'URL complète (les liens courts ne sont pas exploitables
-    // directement par l'API de recherche).
-    if (/goo\.gl\/maps|maps\.app\.goo\.gl/i.test(query)) {
-      try {
-        const resolved = await fetch(query, { method: 'GET', redirect: 'follow' });
-        searchText = resolved.url || query;
-      } catch (e) {
-        // Si la résolution échoue, on continue avec le lien original tel quel.
-      }
-    }
-
-    // Appel à l'API Places (New) — Text Search.
-    const placesResponse = await fetch('https://places.googleapis.com/v1/places:searchText', {
-      method: 'POST',
+    // --- Appel à Google Places API (New) : recherche textuelle ---
+    const googleRes = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress',
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        // On ne demande que les champs nécessaires (limite les coûts)
+        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress"
       },
-      body: JSON.stringify({ textQuery: searchText, maxResultCount: 5 }),
+      body: JSON.stringify({
+        textQuery: q,
+        languageCode: "fr", // résultats en français
+        regionCode: "CA"    // priorité aux commerces du Canada
+      })
     });
 
-    const placesData = await placesResponse.json();
+    const data = await googleRes.json();
 
-    if (!placesResponse.ok) {
-      return res.status(502).json({ error: 'Erreur de Google Places.', details: placesData });
+    if (!googleRes.ok) {
+      res.status(googleRes.status).json({ error: "Erreur de Google Places.", details: data });
+      return;
     }
 
-    const places = placesData.places || [];
-    if (places.length === 0) {
-      return res.status(404).json({ error: 'Aucun commerce trouvé. Vérifiez le nom ou le lien fourni.' });
-    }
+    // --- Transformation : max 5 résultats, chacun avec son lien d'avis direct ---
+    const results = (data.places || []).slice(0, 5).map(function (p) {
+      return {
+        placeId: p.id,
+        name: p.displayName && p.displayName.text ? p.displayName.text : "",
+        address: p.formattedAddress || "",
+        reviewLink: "https://search.google.com/local/writereview?placeid=" + p.id
+      };
+    });
 
-    const results = places.map((place) => ({
-      placeId: place.id,
-      name: place.displayName ? place.displayName.text : '',
-      address: place.formattedAddress || '',
-      reviewLink: `https://search.google.com/local/writereview?placeid=${place.id}`,
-    }));
-
-    return res.status(200).json({ results });
-  } catch (err) {
-    return res.status(500).json({ error: 'Erreur inattendue.', details: err.message });
+    res.status(200).json({ results: results });
+  } catch (e) {
+    res.status(500).json({ error: "Erreur serveur inattendue. Réessayez dans un instant." });
   }
 }
